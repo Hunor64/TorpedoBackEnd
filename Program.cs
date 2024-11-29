@@ -9,6 +9,7 @@ class TorpedoGameServer
 {
     private const int Port = 65432;
     private static ConcurrentDictionary<int, TcpClient> clients = new ConcurrentDictionary<int, TcpClient>();
+    private static ConcurrentDictionary<int, bool> shipsPlaced = new ConcurrentDictionary<int, bool>();
     private static int clientIdCounter = 1;
 
     public static async Task StartServer()
@@ -54,6 +55,7 @@ class TorpedoGameServer
         byte[] responseData = Encoding.UTF8.GetBytes(playerIdMessage);
         NetworkStream stream = client.GetStream();
         await stream.WriteAsync(responseData, 0, responseData.Length);
+        Console.WriteLine($"Sent to Client {clientId}: {playerIdMessage}"); // Log sent message
 
         return clientId <= 2; // Return true if valid, false if invalid
     }
@@ -71,22 +73,53 @@ class TorpedoGameServer
                 string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
                 Console.WriteLine($"Received from Client {clientId}: {message}");
 
-                // Process the message (e.g., hit a cell)
+                // Process the message
                 string responseMessage = ProcessMessage(message, clientId);
                 byte[] responseData = Encoding.UTF8.GetBytes(responseMessage);
                 await stream.WriteAsync(responseData, 0, responseData.Length);
+                Console.WriteLine($"Sent to Client {clientId}: {responseMessage}"); // Log sent message
             }
         }
 
         clients.TryRemove(clientId, out _);
+        shipsPlaced.TryRemove(clientId, out _);
         Console.WriteLine($"Client {clientId} disconnected.");
     }
 
     private static string ProcessMessage(string message, int clientId)
     {
-        // Here you can implement logic to process the message
-        // For now, we will just echo the message back with the client ID
+        if (message.StartsWith("SHIPSPLACED_"))
+        {
+            shipsPlaced[clientId] = true; // Mark that this client has placed their ships
+
+            // Check if both players have placed their ships
+            if (shipsPlaced.TryGetValue(1, out bool player1Placed) &&
+                shipsPlaced.TryGetValue(2, out bool player2Placed) &&
+                player1Placed && player2Placed)
+            {
+                // Both players have placed their ships, send "READY" message to both
+                SendReadyMessageToClients();
+            }
+            return $"Client {clientId} has placed ships.";
+        }
+
+        // Echo the message back with the client ID if it's not a ship placement message
         return $"Client {clientId} says: {message}";
+    }
+
+    private static void SendReadyMessageToClients()
+    {
+        foreach (var client in clients)
+        {
+            string readyMessage = "READY";
+            byte[] responseData = Encoding.UTF8.GetBytes(readyMessage);
+            NetworkStream stream = client.Value.GetStream();
+            _ = stream.WriteAsync(responseData, 0, responseData.Length);
+            Console.WriteLine($"Sent to Client {client.Key}: {readyMessage}"); // Log sent message
+        }
+
+        // Optionally, clear the shipsPlaced status if you want to reset for a new game
+        shipsPlaced.Clear();
     }
 
     static void Main(string[] args)
