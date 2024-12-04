@@ -19,6 +19,7 @@ class TorpedoGameServer
 
     private static ConcurrentQueue<int> availablePlayerIds = new ConcurrentQueue<int>(new[] { 1, 2 });
     private static ConcurrentDictionary<int, bool> shipsPlaced = new ConcurrentDictionary<int, bool>();
+    private static ConcurrentDictionary<int, List<string>> playerShips = new ConcurrentDictionary<int, List<string>>();
 
     public static async Task StartServer()
     {
@@ -130,13 +131,18 @@ class TorpedoGameServer
 
         if (message.StartsWith("SHIPSPLACED_"))
         {
+            // Example: message format could be "SHIPSPLACED_1,2,3" for ship positions
+            var shipPositions = message.Substring("SHIPSPLACED_".Length).Split(',').ToList();
+            playerShips[playerId] = shipPositions;
+
             shipsPlaced[playerId] = true;
 
             // Check if both players have placed their ships
             if (shipsPlaced.Count == 2 && shipsPlaced.Values.All(placed => placed))
             {
-                // Both players are ready, send "READY" message to both
+                // Both players are ready, send "READY" message and ship positions to both
                 SendReadyMessageToPlayers();
+                SendShipPositionsToPlayers();
             }
             return $"Player {playerId} has placed ships.";
         }
@@ -161,6 +167,29 @@ class TorpedoGameServer
 
         // Optionally, clear the shipsPlaced status if you want to reset for a new game
         shipsPlaced.Clear();
+    }
+
+    private static void SendShipPositionsToPlayers()
+    {
+        // Assuming player IDs are 1 and 2
+        foreach (var clientEntry in clients.Values)
+        {
+            if (clientEntry.PlayerId != -1)
+            {
+                // Get the other player's ID
+                int otherPlayerId = clientEntry.PlayerId == 1 ? 2 : 1;
+
+                // Get the ship positions of the other player
+                if (playerShips.TryGetValue(otherPlayerId, out var shipPositions))
+                {
+                    var shipPositionsMessage = $"SHIPPOSITIONS:{string.Join(",", shipPositions)}";
+                    byte[] responseData = Encoding.UTF8.GetBytes(shipPositionsMessage);
+                    NetworkStream stream = clientEntry.Client.GetStream();
+                    _ = stream.WriteAsync(responseData, 0, responseData.Length);
+                    Console.WriteLine($"Sent to Player {clientEntry.PlayerId}: {shipPositionsMessage}");
+                }
+            }
+        }
     }
 
     static void Main(string[] args)
