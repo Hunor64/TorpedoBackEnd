@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq; // For LINQ methods
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -8,9 +10,15 @@ using System.Threading.Tasks;
 class TorpedoGameServer
 {
     private const int Port = 65432;
-    private static ConcurrentDictionary<int, TcpClient> clients = new ConcurrentDictionary<int, TcpClient>();
-    private static ConcurrentDictionary<int, bool> shipsPlaced = new ConcurrentDictionary<int, bool>();
+
+    // Use clientId as a unique identifier for each connection
     private static int clientIdCounter = 1;
+
+    // Manage clients with a dictionary: clientId -> ClientInfo
+    private static ConcurrentDictionary<int, ClientInfo> clients = new ConcurrentDictionary<int, ClientInfo>();
+
+    private static ConcurrentQueue<int> availablePlayerIds = new ConcurrentQueue<int>(new[] { 1, 2 });
+    private static ConcurrentDictionary<int, bool> shipsPlaced = new ConcurrentDictionary<int, bool>();
 
     public static async Task StartServer()
     {
@@ -22,100 +30,133 @@ class TorpedoGameServer
         {
             TcpClient client = await server.AcceptTcpClientAsync();
             int clientId = clientIdCounter++;
-            clients.TryAdd(clientId, client);
-            Console.WriteLine($"Client {clientId} connected.");
 
-            // Send the player ID to the client immediately upon connection
-            if (!await SendPlayerID(client, clientId))
+            // Try to assign a player ID from the available pool
+            int playerId;
+            if (!availablePlayerIds.TryDequeue(out playerId))
             {
-                Console.WriteLine($"Client {clientId} has been disconnected due to invalid player ID.");
-                client.Close();
-                continue; // Skip further processing for this client
+                playerId = -1; // No player ID available, assign -1
             }
 
+            ClientInfo clientInfo = new ClientInfo
+            {
+                Client = client,
+                PlayerId = playerId
+            };
+            clients.TryAdd(clientId, clientInfo);
+            Console.WriteLine($"Client {clientId} connected with Player ID {playerId}.");
+
+            // Send the player ID to the client
+            await SendPlayerID(client, playerId);
+
             // Start handling the client
-            _ = HandleClient(client, clientId);
+            _ = HandleClient(clientId);
         }
     }
 
-    private static async Task<bool> SendPlayerID(TcpClient client, int clientId)
+    private static async Task SendPlayerID(TcpClient client, int playerId)
     {
-        string playerIdMessage;
-
-        // Check the value of clientId and respond accordingly
-        if (clientId > 2)
-        {
-            playerIdMessage = "PlayerID:-1"; // Send -1 to indicate an invalid player ID
-        }
-        else
-        {
-            playerIdMessage = $"PlayerID:{clientId}"; // Format the message to indicate it's a valid player ID
-        }
-
+        string playerIdMessage = $"PlayerID:{playerId}";
         byte[] responseData = Encoding.UTF8.GetBytes(playerIdMessage);
         NetworkStream stream = client.GetStream();
         await stream.WriteAsync(responseData, 0, responseData.Length);
-        Console.WriteLine($"Sent to Client {clientId}: {playerIdMessage}"); // Log sent message
-
-        return clientId <= 2; // Return true if valid, false if invalid
+        Console.WriteLine($"Sent to Client: {playerIdMessage}");
     }
 
-    private static async Task HandleClient(TcpClient client, int clientId)
+    private static async Task HandleClient(int clientId)
     {
-        using (client)
+        if (!clients.TryGetValue(clientId, out ClientInfo clientInfo))
+            return;
+
+        TcpClient client = clientInfo.Client;
+        int playerId = clientInfo.PlayerId;
+
+        try
         {
-            NetworkStream stream = client.GetStream();
-            byte[] buffer = new byte[1024];
-            int bytesRead;
-
-            while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) != 0)
+            using (client)
             {
-                string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                Console.WriteLine($"Received from Client {clientId}: {message}");
+                NetworkStream stream = client.GetStream();
+                byte[] buffer = new byte[1024];
+                int bytesRead;
 
-                // Process the message
-                string responseMessage = ProcessMessage(message, clientId);
-                byte[] responseData = Encoding.UTF8.GetBytes(responseMessage);
-                await stream.WriteAsync(responseData, 0, responseData.Length);
-                Console.WriteLine($"Sent to Client {clientId}: {responseMessage}"); // Log sent message
+                while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) != 0)
+                {
+                    string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                    Console.WriteLine($"Received from Client {clientId} (Player {playerId}): {message}");
+
+                    // Process the message
+                    string responseMessage = ProcessMessage(message, clientId);
+                    byte[] responseData = Encoding.UTF8.GetBytes(responseMessage);
+                    await stream.WriteAsync(responseData, 0, responseData.Length);
+                    Console.WriteLine($"Sent to Client {clientId}: {responseMessage}");
+                }
             }
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error handling client {clientId}: {ex.Message}");
+        }
+        finally
+        {
+            // Clean up when client disconnects
+            clients.TryRemove(clientId, out _);
 
-        clients.TryRemove(clientId, out _);
-        shipsPlaced.TryRemove(clientId, out _);
-        Console.WriteLine($"Client {clientId} disconnected.");
+            if (playerId != -1)
+            {
+                // Return the player ID to the pool
+                availablePlayerIds.Enqueue(playerId);
+                shipsPlaced.TryRemove(playerId, out _);
+                Console.WriteLine($"Client {clientId} disconnected. Player ID {playerId} is now available.");
+            }
+            else
+            {
+                Console.WriteLine($"Client {clientId} disconnected.");
+            }
+        }
     }
 
     private static string ProcessMessage(string message, int clientId)
     {
-        if (message.StartsWith("SHIPSPLACED_"))
-        {
-            shipsPlaced[clientId] = true; // Mark that this client has placed their ships
+        if (!clients.TryGetValue(clientId, out ClientInfo clientInfo))
+            return "Invalid client.";
 
-            // Check if both players have placed their ships
-            if (shipsPlaced.TryGetValue(1, out bool player1Placed) &&
-                shipsPlaced.TryGetValue(2, out bool player2Placed) &&
-                player1Placed && player2Placed)
-            {
-                // Both players have placed their ships, send "READY" message to both
-                SendReadyMessageToClients();
-            }
-            return $"Client {clientId} has placed ships.";
+        int playerId = clientInfo.PlayerId;
+
+        if (playerId == -1)
+        {
+            // Handle messages from spectators
+            return "Spectator: Commands are limited.";
         }
 
-        // Echo the message back with the client ID if it's not a ship placement message
-        return $"Client {clientId} says: {message}";
+        if (message.StartsWith("SHIPSPLACED_"))
+        {
+            shipsPlaced[playerId] = true;
+
+            // Check if both players have placed their ships
+            if (shipsPlaced.Count == 2 && shipsPlaced.Values.All(placed => placed))
+            {
+                // Both players are ready, send "READY" message to both
+                SendReadyMessageToPlayers();
+            }
+            return $"Player {playerId} has placed ships.";
+        }
+
+        // Handle other messages
+        return $"Player {playerId} says: {message}";
     }
 
-    private static void SendReadyMessageToClients()
+    private static void SendReadyMessageToPlayers()
     {
-        foreach (var client in clients)
+        foreach (var clientEntry in clients.Values)
         {
-            string readyMessage = "READY";
-            byte[] responseData = Encoding.UTF8.GetBytes(readyMessage);
-            NetworkStream stream = client.Value.GetStream();
-            _ = stream.WriteAsync(responseData, 0, responseData.Length);
-            Console.WriteLine($"Sent to Client {client.Key}: {readyMessage}"); // Log sent message
+            if (clientEntry.PlayerId != -1)
+            {
+                string readyMessage = "READY";
+                byte[] responseData = Encoding.UTF8.GetBytes(readyMessage);
+                NetworkStream stream = clientEntry.Client.GetStream();
+                _ = stream.WriteAsync(responseData, 0, responseData.Length);
+                Console.WriteLine($"Sent to Player {clientEntry.PlayerId}: {readyMessage}");
+            }
         }
 
         // Optionally, clear the shipsPlaced status if you want to reset for a new game
@@ -126,4 +167,11 @@ class TorpedoGameServer
     {
         StartServer().GetAwaiter().GetResult();
     }
+}
+
+// Define the ClientInfo class
+public class ClientInfo
+{
+    public TcpClient Client { get; set; }
+    public int PlayerId { get; set; } // Player ID (1, 2, or -1 for spectators)
 }
