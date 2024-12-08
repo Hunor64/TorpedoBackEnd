@@ -138,11 +138,11 @@ class TorpedoGameServer
             return "Spectator: Commands are limited.";
         }
 
-        if (message.StartsWith("SHIPSPLACED_"))
+        if (message.StartsWith("SHIPS_"))
         {
             // Receive ship positions from the client
-            var json = message.Substring("SHIPSPLACED_".Length);
-            var shipsData = JsonSerializer.Deserialize<List<ShipData>>(json);
+            var json = message.Split('_');
+            var shipsData = JsonSerializer.Deserialize<List<ShipData>>(json[2]);
 
             if (shipsData != null)
             {
@@ -154,6 +154,7 @@ class TorpedoGameServer
                 }).ToList();
 
                 playerShips[playerId] = ships;
+                PrintPlacedShips(playerId);
                 shipsPlaced[playerId] = true;
                 Console.WriteLine($"Player {playerId} has placed ships.");
 
@@ -290,6 +291,41 @@ class TorpedoGameServer
     static void Main(string[] args)
     {
         StartServer().GetAwaiter().GetResult();
+    }
+    private static void PrintPlacedShips(int playerId)
+    {
+        const int gridSize = 10;
+        char[,] grid = new char[gridSize, gridSize];
+
+        // Initialize grid with water ('X')
+        for (int i = 0; i < gridSize; i++)
+        {
+            for (int j = 0; j < gridSize; j++)
+            {
+                grid[i, j] = 'X';
+            }
+        }
+
+        // Place ships ('O') on the grid
+
+            foreach (var ship in playerShips[playerId])
+            {
+                foreach (var cell in ship.Cells)
+                {
+                    grid[cell.Y, cell.X] = 'O';
+                }
+            }
+  
+
+        // Print the grid
+        for (int i = 0; i < gridSize; i++)
+        {
+            for (int j = 0; j < gridSize; j++)
+            {
+                Console.Write(grid[i, j] + " ");
+            }
+            Console.WriteLine();
+        }
     }
 }
 
