@@ -162,6 +162,7 @@ class TorpedoGameServer
                 {
                     // Both players are ready, send "READY" message to both
                     SendMessageToPlayers("READY");
+                    SendMessageToPlayers($"NEXT_TURN_{currentPlayerTurn}");
                 }
 
                 return $"Player {playerId} ships received.";
